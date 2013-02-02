@@ -1,0 +1,24 @@
+# @@id:caption:north=exit,south=exit,...
+# Description
+
+@@1:Ontop a green, grass-covered hill:north=2
+You are on top of a large green, grass-covered hill.  You can see
+for miles and miles.
+
+@@2:At the base of an old tree:south=1,east=3,west=4
+You are standing at the base of an old tree.  There is a stream at
+the foot.  The sunlight is reflecting off the fishs' back.  What
+a nice day
+
+@@3:Walking along the valley:west=2,south=1
+Walking about the valley, la la la
+
+@@4:Walking up the trail:west=5,east=2
+You start walking up a long, winding trail that leads into a forest.
+You wonder where it goes...
+
+@@5:In the forest:west=6,east=4
+As you continue to walk along the trail, you enjoy the scenary
+of the forest.  You can hear birds and small woodland creatures
+all around.
+

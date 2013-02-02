@@ -1,0 +1,8 @@
+#!/bin/sh
+#
+SERVER_PORT=""
+SERVER_NAME=""
+WEB_SITE=""
+FTP_SITE=""
+ADMIN_EMAIL=""
+LOGFILE=""

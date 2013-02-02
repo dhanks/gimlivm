@@ -1,0 +1,2679 @@
+#!/usr/bin/perl
+use strict;
+use IO::Socket;
+use IO::Select;
+use Fcntl;
+use POSIX qw(strftime);
+use constant conn_proto      => 'tcp';
+use constant listen_max      => 10;
+
+use constant TRUE            => 1;
+use constant FALSE           => 0;
+use constant ON              => 1;
+use constant OFF             => 0;
+
+use constant LOGGED_IN       => 2;
+use constant EDITOR          => 4;
+use constant PROMPT          => 8;
+use constant LOGOUT          => 16;
+use constant GAG             => 32;
+
+use constant NEWBIE          => 2;
+use constant RESIDENT        => 4;
+use constant MAIL            => 8;
+use constant SESSION         => 16;
+use constant EXTRA1          => 32;
+use constant EXTRA2          => 64;
+use constant EXTRA3          => 128;
+use constant EXTRA4          => 256;
+use constant EXTRA5          => 512;
+use constant EXTRA6          => 1024;
+use constant PSU             => 2048;
+use constant SU              => 4096;
+use constant ASU             => 8192;
+use constant LOWER_ADMIN     => 16384;
+use constant ADMIN           => 32768;
+use constant CODER           => 65536;
+use constant WARN            => 131072;
+
+my %privs = ( 'newbie'        => NEWBIE,
+              'resident'      => RESIDENT,
+	      'mail'          => MAIL,
+	      'session'       => SESSION,
+	      'psu'           => PSU,
+	      'su'            => SU,
+	      'asu'           => ASU,
+	      'la'            => LOWER_ADMIN,
+	      'admin'         => ADMIN,
+	      'coder'         => CODER,
+	      'warn'          => WARN );
+
+use constant IAC    => "\377";
+use constant DONT   => "\376";
+use constant DO     => "\375";
+use constant WONT   => "\374";
+use constant WILL   => "\373";
+use constant SB     => "\372";
+use constant GA     => "\371";
+use constant EL     => "\370";
+use constant EC     => "\367";
+use constant AYT    => "\366";
+use constant AO     => "\365";
+use constant IP     => "\364";
+use constant BREAK  => "\363";
+use constant DM     => "\362";
+use constant NOP    => "\361";
+use constant SE     => "\360";
+use constant EOR    => "\357";
+use constant ABORT  => "\356";
+use constant SUSP   => "\355";
+use constant xEOF   => "\354";
+use constant TELOPT_ECHO => "\001";
+use constant TELOPT_NAWS => "\037";
+use constant TELOPT_NEW_ENVIRON => "\047";
+
+=head1 NAME
+
+  ___ _       _ _     __  __
+ / __(_)_ __ | (_)_ _|  \/  |
+| (_ | | '  \| | \ V / |\/| |
+ \___|_|_|_|_|_|_|\_/|_|  |_|
+
+GimliVM - interactive talker environment
+
+=head1 SYNOPSIS
+
+driver [options]
+
+=head1 DESCRIPTION
+
+GimliVM opens up a predefined port allowing external 
+connections to connect in its secure environment.  
+Persons connected have a wide-varity of commands and 
+options at their dispense, to better communicate with 
+other connected persons.  Options and so forth can be 
+tuned in the configuration file, which is listed in 
+the MANIFEST and documentation.
+
+=head1 OPTIONS
+
+=over 4
+
+=item -v, --verbose
+
+Toggles the $verbose program flag, producing extra
+debugging output.
+
+=item -c, --config
+
+You may exlcusively specifiy your configuration file
+in the mannger of -c=<path> or --config=<path>
+
+=item -p, --port
+
+Setting this option with --port=<port number> will
+over-ride any pre-existing port varibles, including
+from the configuration file.
+
+=item -f, --fork
+
+Program will be forked off into the background.
+
+=item -q, --quit
+
+Program executes in quiet mode, nothing will be
+written to STDOUT
+
+=back
+
+=head1 BUGS
+
+Millions upon millions, but none that I'm aware of.  Please send bug
+reports to bugs@gimlivm.org
+
+=head1 AUTHOR
+
+Douglas Richard Hanks, Jr. E<lt><dhanks@resourcephoenix.com>E<gt>
+
+=head1 COPYRIGHT
+
+ GimliVM - interactive talker environment
+ Copyright (C) 2000  Douglas Richard Hanks, Jr.
+
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; either version 2 of the License, or
+ (at your option) any later version.
+
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+
+ You should have received a copy of the GNU General Public License
+ along with this program; if not, write to the Free Software
+ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+
+=cut
+
+$SIG{PIPE} = 'IGNORE';
+
+my %help;
+my %config;
+my %control;
+my %inbuffer;
+my %outbuffer;
+my %commands;
+my ($command_func, $command_flags);
+my $command_entry = { func    => $command_func,
+                      flags   => $command_flags };
+	
+$commands{'!'}{func}           = \&CmdShout;
+$commands{'!'}{flags}          = RESIDENT;
+
+$commands{'?'}{func}           = \&CmdHelp;
+$commands{'?'}{flags}          = NEWBIE;
+
+$commands{'.'}{func}           = \&CmdTell;
+$commands{'.'}{flags}          = NEWBIE;
+
+$commands{','}{func}           = \&CmdRemote;
+$commands{','}{flags}          = NEWBIE;
+
+$commands{'\''}{func}          = \&CmdSay;
+$commands{'\''}{flags}         = NEWBIE;
+
+$commands{'`'}{func}           = \&CmdSay;
+$commands{'`'}{flags}          = NEWBIE;
+
+$commands{'"'}{func}           = \&CmdSay;
+$commands{'"'}{flags}          = NEWBIE;
+
+$commands{';'}{func}           = \&CmdEmote;
+$commands{';'}{flags}          = NEWBIE;
+
+$commands{':'}{func}           = \&CmdEmote;
+$commands{':'}{flags}          = NEWBIE;
+
+$commands{'~'}{func}           = \&CmdThink;
+$commands{'~'}{flags}          = NEWBIE;
+
+$commands{'>'}{func}           = \&CmdTell;
+$commands{'>'}{flags}          = NEWBIE;
+
+$commands{'<'}{func}           = \&CmdRemote;
+$commands{'<'}{flags}          = NEWBIE;
+
+$commands{'<:'}{func}           = \&CmdPremote;
+$commands{'<:'}{flags}          = NEWBIE;
+
+$commands{'<;'}{func}           = \&CmdPremote;
+$commands{'<;'}{flags}          = NEWBIE;
+
+$commands{',;'}{func}           = \&CmdPremote;
+$commands{',;'}{flags}          = NEWBIE;
+
+$commands{',:'}{func}           = \&CmdPremote;
+$commands{',:'}{flags}          = NEWBIE;
+
+$commands{'alias'}{func}        = \&CmdAlias;
+$commands{'alias'}{flags}       = RESIDENT;
+
+$commands{'colorlist'}{func}    = \&CmdShowColor;
+$commands{'colorlist'}{flags}   = NEWBIE;
+
+$commands{'commands'}{func}     = \&CmdCommands;
+$commands{'commands'}{flags}    = NEWBIE;
+ 
+$commands{'emote'}{func}        = \&CmdEmote;
+$commands{'emote'}{flags}       = NEWBIE;
+
+$commands{'exit'}{func}         = \&CmdQuit;
+$commands{'exit'}{flags}        = NEWBIE;
+
+$commands{'gag'}{func}          = \&CmdGag;
+$commands{'gag'}{flags}         = PSU;
+
+$commands{'grant'}{func}        = \&CmdGrant;
+$commands{'grant'}{flags}       = ADMIN;
+
+$commands{'grnt'}{func}         = \&CmdGrant;
+$commands{'grnt'}{flags}        = ADMIN;
+
+$commands{'help'}{func}         = \&CmdHelp;
+$commands{'help'}{flags}        = NEWBIE;
+
+$commands{'look'}{func}         = \&CmdLook;
+$commands{'look'}{flags}        = NEWBIE;
+
+$commands{'man'}{func}          = \&CmdPremote;
+$commands{'man'}{flags}         = NEWBIE;
+
+$commands{'premote'}{func}      = \&CmdPremote;
+$commands{'premote'}{flags}     = NEWBIE;
+
+$commands{'quit'}{func}         = \&CmdQuit;
+$commands{'quit'}{flags}        = NEWBIE;
+
+$commands{'remote'}{func}       = \&CmdRemote;
+$commands{'remote'}{flags}      = NEWBIE;
+
+$commands{'remove'}{func}       = \&CmdRemove;
+$commands{'remove'}{flags}      = ADMIN;
+
+$commands{'say'}{func}          = \&CmdSay;
+$commands{'say'}{flags}         = NEWBIE;
+
+$commands{'showcolors'}{func}   = \&CmdShowColor;
+$commands{'showcolors'}{flags}  = NEWBIE;
+
+$commands{'shout'}{func}        = \&CmdShout;
+$commands{'shout'}{flags}       = NEWBIE;
+
+$commands{'tell'}{func}         = \&CmdTell;
+$commands{'tell'}{flags}        = NEWBIE;
+
+$commands{'think'}{func}        = \&CmdThink;
+$commands{'think'}{flags}       = NEWBIE;
+
+$commands{'title'}{func}        = \&CmdTitle;
+$commands{'title'}{flags}       = NEWBIE;
+
+$commands{'w'}{func}            = \&CmdWho;
+$commands{'w'}{flags}           = NEWBIE;
+
+$commands{'who'}{func}          = \&CmdWho;
+$commands{'who'}{flags}         = NEWBIE;
+
+$commands{'passwd'}{func}       = \&CmdPassword;
+$commands{'passwd'}{flags}      = RESIDENT;
+
+$commands{'password'}{func}     = \&CmdPassword;
+$commands{'password'}{flags}    = RESIDENT;
+
+$commands{'save'}{func}         = \&CmdSave;
+$commands{'save'}{flags}        = RESIDENT;
+
+$commands{'ww'}{func}           = \&CmdWordWrap;
+$commands{'ww'}{flags}          = NEWBIE;
+
+$commands{'wordwrap'}{func}     = \&CmdWordWrap;
+$commands{'wordwrap'}{flags}    = NEWBIE;
+
+# No need depending on non-standard modules when I can do it myself!
+my %c = ( 'nor',		=> "\033[0m",
+          'bold',		=> "\033[1m",
+          'faint',		=> "\033[2m",
+          'blink',		=> "\033[5m",
+          'reverse',		=> "\033[7m",
+          'black',		=> "\033[0;30m",
+          'red',		=> "\033[0;31m",
+          'green',		=> "\033[0;32m",
+          'brown',		=> "\033[0;33m",
+          'blue',		=> "\033[0;34m",
+          'magenta',		=> "\033[0;35m",
+          'cyan',		=> "\033[0;36m",
+          'lightgray',		=> "\033[0;37m",
+          'darkgray',		=> "\033[1;30m",
+          'lightred',		=> "\033[1;31m",
+          'lightgreen',		=> "\033[1;32m",
+          'yellow',		=> "\033[1;33m",
+          'lightblue',		=> "\033[1;34m",
+          'lightmagenta',	=> "\033[1;35m",
+          'lightcyan',		=> "\033[1;36m",
+	  'white',		=> "\033[1;37m" );
+my $configuration = '../etc/conf';
+print STDERR "\n--\nCan't find configuration file.  Check in ../etc/config\n--\n" and exit(-1) unless -r $configuration;
+
+open(HELP, "<../lib/help/resident.help");
+my ($help_type, $help_key, @help_buf);
+while(<HELP>)
+{
+   if(/^(\w+)::(.*)$/)
+   {
+      while(scalar(@help_buf))
+      {
+         shift(@help_buf);
+      }
+      my $key = $1;
+      my $val = $2;
+      if(grep('|', $val))
+      {
+         my @pipe = split(/\|/, $val);
+	 while(scalar(@pipe))
+	 {
+	    my $sec = shift(@pipe);
+            my $entry = { type => $1,
+                          key  => $2,
+		          text => '' };
+	    
+	    $help{$sec} = $entry;
+	    $help_type = $key;
+	    push(@help_buf, $sec);
+	 }
+	 next;
+      }
+      else
+      {
+         my $entry = { type => $1,
+                       key  => $2,
+		       text => '' };
+		       
+         push(@help_buf, $val);
+         $help{$2} = $entry;
+         next;
+      }
+   }
+   my $i = 0;
+   
+   while(scalar($help_buf[$i]))
+   {
+      $help{$help_buf[$i]}{text} .= $_;
+      $i++;
+   }
+}
+      
+
+# Time for a little bit of configuration file magic :>
+
+my $curconf;
+open(CONF, "<$configuration");
+while(<CONF>)
+{
+	chomp;
+	s/#.*//;
+	/\S/ or next;
+	s/^\s+//;        
+	s/\s+$//;
+
+	if (m{^</\w+>})
+	{
+		$curconf = undef;
+		next;
+	}
+	elsif (m{^<\w+\s+\w+>})
+	{
+		if ($curconf)
+		{
+			print STDERR "${configuration}\[$.\], section <$$curconf{id}>\n";
+			exit -1;
+		}
+		tr/A-Z/a-z/;
+		(my $entry_type, my $id) = m{<(\w+)\s+(\w+)>};
+		$curconf = { entry_type => $entry_type, id => $id };
+		$config{$entry_type}{$id} = $curconf;
+		next;
+	}
+	$curconf or next;
+	(my $key, my $val) = split(/\s*=\s*/);
+	if(!length($val))
+	{
+		print STDERR "${configuration}\[$.\], section <$$curconf{id}>\n";
+		exit -1;
+	}
+	$key =~ tr/A-Z/a-z/;
+	$$curconf{$key} = $val;
+}
+
+close(CONF);
+
+$control{config} = $config{config};
+
+foreach my $curconf (values(%{$config{node}}))
+{
+        my $entry_type = $$curconf{entry_type};
+        my $id = $$curconf{id};
+
+        while ((my $key, my $val) = each(%{$control{config}{default}}))
+        {
+                $control{$entry_type}{$id}{$key} = $val;
+        }
+        while ((my $key, my $val) = each(%$curconf))
+        {
+                if($key eq 'include')
+                {
+                        my $inc = $config{macro}{$val} || $config{node}{$val};
+                        while ((my $k, my $v) = each(%$inc))
+                        {
+                                $control{$entry_type}{$id}{$k} = $v;
+                        }
+                }
+                $control{$entry_type}{$id}{$key} = $val;
+        }
+}
+
+if(0)
+{
+        foreach my $ct (values(%control))
+        {
+                foreach $curconf (values(%$ct))
+                {
+                        while ((my $key, my $val) = each(%$curconf))
+                        {
+                                my $str = sprintf("%s.%s.%-20s%s\n",
+                                        $$curconf{entry_type},
+                                        $$curconf{id},
+                                        $key,
+                                        $val);
+			        makelog($str);
+                        }
+                }
+        }
+}
+
+$control{config}{server}{accepted_characters} = ' \033[0m\033[1m\033[2m\033[5m\033[7m\033[0;30m033[0;31m033[0;32m033[0;33m033[0;34m033[0;35m033[0;36m033[0;37m\033[1;30m\033[1;31m\033[1;32m\033[1;33m\033[1;34m\033[1;35m\033[1;36m\033[1;37m0-9A-Za-z`~!\\\@#\$%\^&\*\(\)\-_=\+\[\{\]\};:\'"\377\371\t\n,<.>\/?|';
+$config{boot_time} = localtime($^T);
+
+$| = 1;
+
+my %player;
+
+makelog("SVR1 Booting \@ $config{boot_time}\n");
+		
+###############
+# File handling
+###############
+
+sub save_player
+{
+   my $p = shift;
+
+   open(PFILE, ">../lib/players/$player{$p}{name}") or return (-1);
+   select(PFILE);
+   print "name:$player{$p}{name}\n";
+   print "last_ip:$player{$p}{ip}\n";
+   print "last_dns:$player{$p}{dns}\n";
+   print "last_port:$player{$p}{port}\n";
+   print "title:$player{$p}{title}\n";
+   print "last_login:$player{$p}{last_login}\n";
+   print "password:$player{$p}{password}\n";
+   print "flags:$player{$p}{flags}\n";
+   print "state:$player{$p}{state}\n";
+   print "privs:$player{$p}{privs}\n";
+   print "ENV:PATH:$player{$p}{env}{PATH}\n";
+   print "ENV:PS1:$player{$p}{env}{PS1}\n";
+   print "ENV:PS2:$player{$p}{env}{PS2}\n";
+   foreach my $key (keys %{$player{$p}{alias}})
+   {
+      print "ALIAS:$key:$player{$p}{alias}{$key}\n";
+   }
+   close(PFILE) or return (-1);
+   select(STDOUT);
+   return (0);
+}
+
+sub load_player
+{
+   my $p = shift;
+   my $name = shift;
+   my $fn;
+   my ($k, $v);   
+
+   $fn = "../lib/players/$name";
+   unless (-r $fn)
+   {
+      return (-1);
+   }
+   open(PF, "<../lib/players/$name") or return (-2);
+   while(<PF>)
+   {
+      chomp;
+      if(/^ENV:(\w+):(.*)$/)
+      {
+         $player{$p}{env}{$1} = $2;
+	 next;
+      }
+      elsif(/^ALIAS:(.*):(.*)$/)
+      {
+         $player{$p}{alias}{$1} = $2;
+	 next;
+      }
+      ($k, $v) = split(':', $_, 2);
+      $player{$p}{$k} = $v;
+   }
+   close(PF) or return (-3);
+   $player{$p}{state} &= ~LOGOUT;
+   return (0);
+}
+
+my $issue;
+my $motd;
+
+open(ISSUE, '<../etc/issue');
+while(<ISSUE>)
+{
+  $issue .= $_;
+}
+close ISSUE;
+
+open(MOTD, '<../etc/motd');
+while(<MOTD>)
+{
+  $motd .= $_;
+}
+close MOTD;
+
+#################
+# Socket Handling
+#################
+
+my $listen_sock = IO::Socket::INET->new(LocalPort  => $control{config}{server}{port},
+					Proto	   => conn_proto,
+					Type	   => SOCK_STREAM, 
+					Listen	   => listen_max,
+					Reuse	   => 1) or die "IO::Socket::INET:  $!\n";
+
+NonBlock($listen_sock);
+
+my $sel = IO::Select->new($listen_sock) or die "IO::Select:  $!\n";
+
+makelog("Alive and kicking on $control{config}{server}{port}\n"); 
+
+sub add_client_sock 
+{
+   my $client = shift;
+   my ($name, $ip, $dns, $port, $addr, $socket, $flags, $func, $newbie, $last_port, $last_ip, $last_dns, $title, $last_login, $tmp, $email, $privs, $state );
+   my $entry = { name			=> $name,
+                 ip			=> $ip,
+	         dns			=> $dns,
+	         port			=> $port,
+	         addr			=> $addr,
+	         socket			=> $socket, 
+		 flags			=> $flags,
+		 func			=> $func, 
+		 newbie			=> $newbie,
+                 last_port		=> $last_port,
+                 last_ip		=> $last_ip,
+                 last_dns		=> $last_dns,
+                 title			=> $title,
+		 last_login    		=> $last_login,
+		 tmp    		=> $tmp,
+		 email                  => $email,
+		 privs                  => $privs,
+		 state                  => $state };
+   # players get their own environment table, isn't that neat?
+   my ($path, $ps1, $ps2, $col, $row);
+   my $envt =  { PATH                   => $path,
+                 PS1                    => $ps1,
+		 PS2                    => $ps2,
+		 COL                    => $col,
+		 ROW                    => $row };
+   
+   my ($alias1, $alias2);
+   my $alias_entry = { l => "look" };
+   $sel->add($client);
+   NonBlock($client);
+   $player{$client} = $entry;
+   $player{$client}{alias} = $alias_entry;
+   $player{$client}{env} = $envt;
+   $player{$client}{env}{COL} = 77;
+   $player{$client}{save} = 0;
+   $player{$client}{last_login} = gmtime;
+   $player{$client}{socket} = $client;
+   ($player{$client}{port}, $player{$client}{addr}) = sockaddr_in($client->peername());
+   $player{$client}{ip} = inet_ntoa($player{$client}{addr});
+#   $player{$client}{dns} = gethostbyaddr($player{$client}{addr}, AF_INET) or $player{$client}{dns} = $player{$client}{ip};
+   makelog("New connection from $player{$client}{dns} ($player{$client}{ip}:$player{$client}{port})\n");
+   tell_player($client, $issue);
+   tell_player($client, "Use the name 'new' to create a new character\n");
+   prompt($client, $control{config}{server}{login});
+   $player{$client}{func} = \&get_logon;
+   $control{config}{server}{connections}++;
+}
+
+sub remove_socket
+{
+   my ($sock, $str) = @_;
+      
+   $str or $str = 'unknown';
+   makelog("Disconnecting socket [$str] $player{$sock}{dns} ($player{$sock}{ip}:$player{$sock}{port})\n");
+   $player{$sock}{last_login} = strftime("%b %d %T ", gmtime);
+   $player{$sock}{state} &= ~LOGOUT;
+   $player{$sock}{state} &= ~PROMPT;
+   CmdSave($sock, 1) if (exists($player{$sock}{save}) && $player{$sock}{save} eq 1); 
+   $sel->remove($sock);
+   $sock->close;
+   delete $outbuffer{$sock};
+   delete $player{$sock};
+   $control{config}{server}{connections}--;
+}
+
+sub prompt
+{
+   my ($p, $str) = @_;
+   
+   $str or return;
+   tell_player($p, "{nor}$str\377\371 ");
+}
+
+##################
+# Logon procedures
+##################
+
+sub get_logon
+{
+   my $p = shift;
+   my $ret;
+   my $str;
+   
+   $player{$p}{newbie} = 1;
+   s/^\s+//;
+   s/\s+$//;
+   s/[^$control{config}{server}{accepted_characters}]+//go;
+   if(/^quit/i)
+   {
+      $player{$p}{state} |= LOGOUT;
+      return;
+   }
+   elsif(/^who/i)
+   {
+      tell_player($p, "This feature has been disabled.\n");
+      prompt($p, $control{config}{server}{login});
+      return;
+   }
+   elsif(/\.\./ || /\//)
+   {
+      $str = "Logging hacking attempt from $player{$p}{ip}:$player{$p}{port}.  Good-bye.\n";
+      syswrite($p, $str, length($str));
+      makelog("Hacking attempt at logon prompt from $player{$p}{ip}:$player{$p}{port}\n");
+      makelog("Tried to use character combination of '$_'\n");
+      remove_socket($p, 'hacking attempt:  get_logon');
+      return;
+   }
+   elsif(/^new/i)
+   {
+      prompt($p, 'Whom shall you be known as?  ');
+      $player{$p}{func} = \&get_name;
+      return;
+   }
+   elsif(/^\w+/)
+   {
+      $ret = load_player($p, $_);
+      if($ret eq 0)
+      {
+         $player{$p}{state} &= ~LOGGED_IN;
+	 $player{$p}{state} &= ~PROMPT;
+	 
+	 foreach my $sock (keys %player)
+	 {
+	    if($player{$sock}{name} eq $player{$p}{name} && $sock ne $p)
+	    {
+	       tell_player($sock, "You feel as if someone is walking over your grave.\n");
+	    }
+	 }
+         prompt($p, 'Password:  ');
+	 raw_tell($p, "\377\373\001");
+	 $player{$p}{func} = \&logon_get_password;
+	 return;
+       }
+       else
+       {
+          tell_player($p, "Name not found in the database.  Please enter a valid name.\n");
+	  prompt($p, $control{config}{server}{login});
+	  $player{$p}{func} = \&get_logon;
+	  return;
+       }
+   }
+   else
+   {
+      prompt($p, $control{config}{server}{login});
+      return;
+   }
+}
+
+sub get_name
+{
+   my $p = shift;
+   
+   s/^\s+//;
+   s/\s.*$//;
+   tr/[A-Z]/[a-z]/;
+   foreach my $key (keys %player)
+   {
+      $player{$key}{name} or next;
+      if($player{$key}{name} eq $_ && $key ne $p)
+      {
+         tell_player($key, "You feel as if someone is walking over your grave.\n");
+         tell_player($p, "Someone on the program is already using that name, please try again.\n");
+	 prompt($p, 'Whom shall you be known as?  ');
+	 return;
+       }
+   }
+   if(-r "../lib/players/$_")
+   {
+      tell_player($p, "Sorry, that name has already been taken, please try again.\n");
+      prompt($p, 'Whom shall you be known as? ');
+      return;
+   }
+   if(/[0-9]/)
+   {
+      tell_player($p, "Sorry, I cannot allow any digits in your name, please try again.\n");
+      prompt($p, 'Whom shall you be known as?  ');
+      return;
+   }
+   elsif(/[^\w]/)
+   {
+      tell_player($p, "Sorry, I cannot allow punctuation in your name, please try again.\n");
+      prompt($p, 'Whom shall you be known as?  ');
+      return;
+   }
+   elsif(length $_ < 2 || length $_ > 20)
+   {
+      tell_player($p, "Names have to be between 2 and 20 characters, please try again.\n");
+      prompt($p, 'Whom shall you be known as?  ');
+      return;
+   }
+   elsif(/fuck/)
+   {
+      tell_player($p, "Names containing vulgar language are not permitted, please try again.\n");
+      prompt($p, 'Whom shall you be known as?  ');
+      return;
+   }
+   elsif(/^quit$/i || /^who$/i)
+   {
+      tell_player($p, "You have selected a reserved word, please try again.\n");
+      prompt($p, 'Whom shall you be known as?  ');
+      return;
+   }
+   elsif(/^(\w+)/)
+   {
+      prompt($p, "$1, is this correct? [y/N] ");
+      $player{$p}{name} = $1;
+      $player{$p}{func} = \&confirm_name;      
+   }
+   else
+   {
+      prompt($p, 'Whom shall you be known as?  ');
+   }
+}
+   
+sub confirm_name
+{
+   my $p = shift;
+   
+   s/^\s+//;
+   s/\s.*$//;
+
+   if(/^y/i || /^yes/i)
+   {
+      setup_newbie($p);
+      return;
+   }
+   else
+   {
+      $player{$p}{name} = undef;
+      prompt($p, $control{config}{server}{login});
+      $player{$p}{func} = \&get_logon;
+      return;
+   }
+}
+
+sub setup_newbie
+{
+   my $p = shift;
+   
+   $player{$p}{privs} |= NEWBIE;
+   $player{$p}{title} = 'the newbie, so please treat me nicely.';
+   $player{$p}{env}{PS1} = '->';
+   $player{$p}{env}{PS2} = '>';
+   $player{$p}{func} = \&hit_return;
+   tell_player($p, $motd);
+   prompt($p, '[Hit <RETURN> to continue] ');
+   return;
+}
+
+sub hit_return
+{
+   my $p = shift;
+   
+   delete $player{$p}{func}; 
+   tell_player($p, "--\nLast logged in $player{$p}{last_login}from $player{$p}{last_ip}\n\n");
+   $player{$p}{state} |= PROMPT;
+   $player{$p}{state} |= LOGGED_IN;
+   tell_everyone($p, "$player{$p}{name} flies through the air and lands in a heap on the ground.\n");
+   CmdLook($p);
+   return;
+}
+
+sub logon_get_password
+{
+   my $p = shift;
+   my $str;
+   my $reccon = 0;
+   
+   s/^\s+//;
+   s/\s.*$//;
+   
+   if($_ ne $player{$p}{password})
+   {
+      $str = "Login incorrect.\n\n";
+      syswrite($p, $str, length($str));
+      remove_socket($p, 'logon_get_password');
+      return;
+   }
+
+   foreach my $sock (keys %player)
+   {
+      if(($sock ne $p) && ($player{$sock}{name} eq $player{$p}{name}))
+      {
+         $reccon = 1;
+         $str = "Your mind slowly drifts away as your body is over taken by $player{$p}{ip}\n";
+         syswrite($player{$sock}{socket}, $str, length($str));
+         $player{$sock}{last_login} = strftime("%b %d %T ", gmtime);
+         CmdSave($sock, 1) if (exists($player{$sock}{email}));
+         delete $outbuffer{$sock};
+         $sel->remove($player{$sock}{socket});
+         $player{$sock}{socket}->close;
+         delete $player{$sock};
+      }
+   }
+   if($reccon eq 1)
+   {
+      tell_player($p, "You were already on the program!!!\n");
+      $player{$p}{func} = undef;
+      $player{$p}{state} |= PROMPT;
+      $player{$p}{state} |= LOGGED_IN;
+      CmdLook($p);
+      tell_player($p, "Reconnection complete.\n");
+      return;
+   }
+   raw_tell($p, "\377\374\001");
+   tell_player($p, $motd);
+   prompt($p, '[Hit <RETURN> to continue] ');
+   $player{$p}{func} = \&hit_return;
+   return;
+}
+
+###################
+# Password handling
+###################
+
+# There's really no need to crypt() passwords (mainly because perl
+# does it funky system to system), so we'll use rot13.
+
+sub CmdPassword
+{
+   my $p = shift;
+
+   s/^\s+//;
+   s/\s.*$//;
+
+   raw_tell($p, "\377\373\001");
+   $player{$p}{state} &= ~PROMPT;
+   if(!(scalar($player{$p}{password})))
+   {
+      tell_player($p, "Enter the new password (minimum of 5, maximum of 127 characters)\nPlease use a combination of upper and lower case letters and numbers.\n");
+      prompt($p, 'New password:  ');
+      $player{$p}{func} = \&new_password;
+      return;
+   }
+   else
+   {
+      prompt($p, 'Old password:  ');
+      $player{$p}{func} = \&current_password;
+      return;
+   }
+}
+
+sub current_password
+{
+   my $p = shift;
+
+   s/^\s+//;
+   s/\s.*$//;
+
+   if($_ eq $player{$p}{password})
+   {
+      prompt($p, "\nPlease enter a new password:  ");
+      $player{$p}{func} = \&new_password;
+      return;
+   }
+   else
+   {
+      tell_player($p, "\nIncorrect password for `$player{$p}{name}'\nThe password for $player{$p}{name} is unchanged.\n");
+      delete $player{$p}{func};
+      $player{$p}{state} |= PROMPT;
+      raw_tell($p, "\377\374\001");
+      return;
+   }
+}
+
+sub new_password
+{
+   my $p = shift;
+   
+   s/^\s+//;
+   s/\s.*$//;
+
+   if(length($_) < 5 || length($_) > 128)
+   {
+      tell_player($p, "Enter the new password (minimum of 4, maximum of 127 characters)\nPlease use a combination of upper and lower case letters and numbers.\n");
+      prompt($p, 'New password:  ');
+      return;
+   }
+   $player{$p}{tmp} = $_;
+   prompt($p, 'Re-enter new password:  ');
+   $player{$p}{func} = \&confirm_password;
+   return;
+}
+
+sub confirm_password
+{
+   my $p = shift;
+   
+   s/^\s+//;
+   s/\s.*$//;
+ 
+   if($_ ne $player{$p}{tmp})
+   {
+      tell_player($p, "They don't match; try again.\n");
+      prompt($p, 'New password:  ');
+      $player{$p}{func} = \&new_password;
+      return;
+   }
+   tell_player($p, "Password changed.\n");
+   raw_tell($p, "\377\374\001");
+   $player{$p}{state} |= PROMPT;
+   $player{$p}{password} = $_;
+   delete $player{$p}{tmp};
+   delete $player{$p}{func};
+   return;
+}
+
+####################################
+# Handle the users' input and output
+####################################
+
+sub process_input
+{
+	my $sock = shift;
+	my $buf;
+   	my $n_read = sysread($sock, $buf, 1024);
+   	my $cmd;
+   	my $args;
+   	my $func;
+	my $i = 0;
+   	my @buffer;
+	my $recur;
+	
+   	unless ($n_read) {
+      		tell_everyone($sock, "$player{$sock}{name} jumps up into the air and disappears with a loud *POP* !\n");
+      		remove_socket($sock, 'process_input');
+      		return;
+   	}
+  
+        $buf =~ s/\r//;
+  	@buffer = split(//, $buf);
+
+  	while(scalar($buffer[$i]))
+  	{
+     		if($buffer[$i] eq IAC)
+     		{
+        		$i++;
+        		if($buffer[$i] eq AYT)
+        		{
+           		AYT:
+           			tell_player($sock, "No-one here but us pigeons!\n");
+        		}
+        		elsif($buffer[$i] eq IAC)
+        		{
+        		}
+        		elsif($buffer[$i] eq IP || $buffer[$i] eq BREAK)
+        		{
+           		IP:
+           			print "Killing client $sock!\n";
+           			remove_socket($sock);
+           			return;
+        		}
+        		elsif($buffer[$i] eq EC)
+        		{
+           		EC:
+           			print "backspacing ...\n";
+        		}
+        		elsif($buffer[$i] eq EL)
+        		{
+           		EL:
+           			print "erasing line ...\n";
+        		}
+        		elsif($buffer[$i] eq DO)
+        		{
+           		DO:
+           			$i++;
+           			if($buffer[$i] eq TELOPT_ECHO)
+           			{
+              				print "wants to echo ...\n";
+          	 		}
+           			else
+           			{
+              				print "unknown post do char: $buffer[$i]\n";
+           			}
+        		}
+        		elsif($buffer[$i] eq DONT)
+        		{
+           		DONT:
+           			$i++;
+           			if($buffer[$i] eq TELOPT_ECHO)
+           			{
+              				print "wants to echo ...\n";
+           			}
+           			else
+           			{
+              				print "unknown post dont char: $buffer[$i]\n";
+           			}
+        		}
+        		elsif($buffer[$i] eq WONT)
+        		{
+          		WONT:
+          			$i++;
+          			if($buffer[$i] eq TELOPT_NAWS)
+          			{
+             				print "terminal size ...\n";
+          			}
+          			elsif($buffer[$i] eq TELOPT_NEW_ENVIRON)
+          			{
+             				print "new environment vars ..\n";
+          			}
+          			else
+          			{
+             				print "unknown post wont char: $buffer[$i]\n";
+          			}
+       			}
+       			elsif($buffer[$i] eq WILL)
+       			{
+          		WONT:
+          			$i++;
+          			if($buffer[$i] eq TELOPT_NAWS)
+          			{
+             				print "terminal size ...\n";
+          			}
+          			elsif($buffer[$i] eq TELOPT_NEW_ENVIRON)
+          			{
+            	 			my $code = "\377\372\047\001\000USER\000ACCT\000\003\377\360";
+ 
+             				syswrite($sock, $code, length($code));
+             				print "printting new env chars ..\n";
+          			}
+          			else
+          			{
+             				print "unknown post will char: $buffer[$i]\n";
+          			}
+       			}
+       			elsif($buffer[$i] eq SB)
+       			{
+          		SB:
+          			$i++;
+          			if($buffer[$i] eq TELOPT_NAWS)
+          			{
+             				my $x;
+             				my $y;
+
+             				$x .= $buffer[++$i];
+             				$x .= $buffer[++$i];
+             				$y .= $buffer[++$i];
+             				$y .= $buffer[++$i];
+             				$i++;
+             				$i++;
+
+             				print "dimensions: $x x $y\n";
+          			}
+          			elsif($buffer[$i] eq TELOPT_NEW_ENVIRON)
+          			{
+             				while(scalar($buffer[$i]) && $buffer[$i] ne IAC)
+             				{
+                				$i++;
+             				}
+          			}
+          			else
+          			{
+             				print "unknown post sb char: $buffer[$i]\n";
+          			}
+       			}
+       			else
+       			{
+          			print "unknown post iac char: $buffer[$i]\n";
+       			}
+    		}
+    		elsif($buffer[$i] eq SB) { goto SB; }
+    		elsif($buffer[$i] eq WILL) { goto WILL; }
+    		elsif($buffer[$i] eq WONT) { goto WONT; }
+    		elsif($buffer[$i] eq DO) { goto DO; }
+    		elsif($buffer[$i] eq DONT) { goto DONT; }
+		elsif($buffer[$i] eq "\n")
+		{
+		        $_ = join('', @buffer);
+			chomp;
+			s/^\s+//;
+			s/\s+$//;
+			RECUR:
+		        if($player{$sock}{state} & GAG)
+			{
+			        tr/A-Z/a-z/;
+			}
+			if(exists($player{$sock}{func}))
+			{
+			        ($args) = m/^.*$/;
+				$func = $player{$sock}{func};
+				&$func($player{$sock}{socket}, $args);
+				prompt($sock, $player{$sock}{env}{PS1}) if($player{$sock}{state} & PROMPT);
+				delete $inbuffer{$sock};
+				return;
+			}
+			m/^(\w+)/;
+			$cmd = $1;
+			if(/^(\w+)/)
+			{
+			   $cmd = $1;
+			   ($args) = m/^\w+\s+(.*)$/;
+			   goto EXECUTE;
+			}
+			elsif(/^(.)\s+(.*)$/)
+			{
+				$cmd = $1;
+				$args or $args = $2;
+			}
+			elsif(m/^(.)(.*)$/)
+			{
+				$cmd = $1;
+				$args or $args = $2;
+			}
+			m/^(..)/;
+			$buf = $1;
+			$buf =~ tr/A-Z/a-z/ if $1;
+			if((exists($commands{$buf}) && ($player{$sock}{privs}) >= ($commands{$cmd}{flags})))
+			{
+			        m/^(..)(.*)$/;
+				$cmd = $1;
+				$args = $2;
+			}
+			$cmd or goto PROMPT;
+			$cmd =~ tr/A-Z/a-z/;
+			$args =~ s/^\s+// if $args;
+			EXECUTE:
+			if(exists($player{$sock}{alias}{$cmd}))
+			{
+			   $_ = $player{$sock}{alias}{$cmd};
+			   $_ = "$_ $args";
+			   $cmd = undef;
+			   $args = undef;
+			   $recur++;
+			   if($recur > 10)
+			   {
+			      tell_player($sock, "Aliases recursed or looped too many times, command truncated.\n");
+			      prompt($sock, $player{$sock}{env}{PS1}) if($player{$sock}{state} & PROMPT);
+			      delete $inbuffer{$sock};
+			      return;
+			   }
+			   goto RECUR;
+			}
+			if(exists $commands{$cmd} && $player{$sock}{privs} >= $commands{$cmd}{flags})
+			{
+			       $func = $commands{$cmd}{func};
+			       &$func($sock, $args);
+		        }
+			elsif($cmd)
+			{
+			       tell_player($sock, "Cannot find command '$cmd'\n");
+			}
+			PROMPT:
+			prompt($sock, $player{$sock}{env}{PS1}) if ($player{$sock}{state} & PROMPT);
+			delete $inbuffer{$sock};
+			return;
+		}
+    		$i++;
+  	}
+	$inbuffer{$sock} .= join('', @buffer);
+}
+
+sub process_output
+{
+   my $sock = shift;
+   my $n;
+   use Text::Wrap qw(wrap $columns);
+   
+   return unless $sock;
+   return unless $outbuffer{$sock};
+
+   $_ = $outbuffer{$sock};
+   s/%V/$control{config}{server}{release}/;
+   s/\n/\r\n/go;
+   if(/{(\w+)}/go)
+   {
+      if(exists($c{$1}))
+      {
+         s/{(\w+)}/$c{$1}/go;
+      }
+      else
+      {
+         s/{(\w+)}//go;
+      }
+   }
+   #$columns = $player{$sock}{env}{COL};
+   #$_ = wrap(undef, undef, $_);
+   $n = length($_);
+   syswrite($sock, $_, $n);
+
+   unless ($n) 
+   {
+      tell_everyone($sock, "$player{$sock}{name} jumps up into the air and disappears with a loud *POP* !\n");
+      remove_socket($sock, 'process_output');
+      return;
+   }
+   delete $outbuffer{$sock};
+}
+
+sub wrapme
+{
+   my ($len, $text) = @_;
+   use Text::Wrap qw(wrap $columns);
+   
+   $columns = $len;
+   $text = wrap(undef, undef, $text);
+   return $text;
+}
+   
+sub banner
+{
+   my ($p, $len, $ch, $str) = @_;
+   my $dots;
+
+   $len = ($player{$p}{env}{COL} - 5);
+   if($str)
+   {
+      $dots = $ch x ($len-(length($str)+4));
+      tell_player($p, "--[{bold}$str {nor}]$dots\n");
+   }
+   else
+   {
+      $dots = $ch x $len;
+      tell_player($p, "$dots\n");
+   }
+}
+
+sub raw_tell
+{
+   my ($p, $str) = @_;
+   
+   syswrite($p, $str, length($str));
+   return;
+}  
+
+sub tell_everyone
+{
+   my ($p, $str) = @_;
+   
+   $str or return;
+   foreach my $sock (keys %player)
+   {
+      if($p ne $player{$sock}{socket} && $player{$sock}{state} & LOGGED_IN)
+      {
+         tell_player($player{$sock}{socket}, $str);
+      }
+   }
+}
+
+sub tell_player
+{
+   my ($p, $str) = @_;
+   
+   $str or return;
+   $outbuffer{$p} .= $str;
+}
+
+sub makelog
+{
+   my $str = shift;
+   my $stime = strftime("$control{config}{logfile}{format}", gmtime);
+   
+   open(LOG, ">>$control{config}{logfile}{file}");
+   select(LOG);
+   print $stime, $str;
+   select(STDOUT);
+   print $stime, $str;
+   close(LOG);
+}     
+
+sub SafeQuit
+{
+   my $sock = shift;
+   my $str = "Disconnecting your socket $sock\nThanks for visiting, come again!\n\n";
+  
+   syswrite($sock, $str, length $str);
+   $player{$sock}{last_login} = strftime("%b %d %T ", gmtime); 
+   CmdSave($sock, 1);
+   tell_everyone($sock, "$player{$sock}{name} jumps up into the air and disappears with a loud *POP* !\n");
+   remove_socket($sock, 'SafeQuit');
+}
+
+sub NonBlock
+{
+   my $socket = shift;
+   my $flags;
+   
+   $flags = fcntl($socket, F_GETFL, 0) or die "Can't get flags on socket:  $!\n";
+   fcntl($socket, F_GETFL, $flags | O_NONBLOCK) or die "Can't make socket non-blocking:  $!\n";
+}
+
+sub re_is_valid
+{
+   my $srch = shift;
+   
+   return eval { "" =~ /$srch/; 1 } || 0;
+}
+
+#######################
+# User-defined commands
+#######################
+
+sub CmdHelp
+{
+   my ($p, $str) = @_;
+   my ($text, $topic);
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   chomp;
+   
+   if(/^$/) { $topic = 'intro'; }
+   elsif(/\.\./ || /\//)
+   {
+      tell_player($p, " Usage : man [topic|example]\n");
+      return;
+   }
+   elsif(/^example$/i)
+   {
+      tell_player($p, " Example : man commands\n");
+      return;
+   }
+   $topic = $_;
+   if(exists($help{$topic}))
+   {
+      tell_player($p, $help{$topic}{text});
+      return;
+   }
+   else
+   {
+      tell_player($p, "Couldn't find help on that subject\n");
+      return;
+   }
+}
+sub CmdWordWrap
+{
+   my ($p, $str) = @_;
+
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   chomp;
+   
+   if(/^$/)
+   {
+      tell_player($p, " Usage : wordwrap [columns|-p|example]\n");
+      return;
+   }
+   elsif(/^example$/i)
+   {
+      tell_player($p, " Example : wordwrap -p\n");
+      tell_player($p, " Example : wordwrap 75\n");
+      return;
+   }
+   elsif(/^-p$/i)
+   {
+      tell_player($p, " \$player{\$p}{env}{COL} = $player{$p}{env}{COL}\n");
+      return;
+   }
+   if($_ < 10 || $_ > 200)
+   {
+      tell_player($p, "Out of bounds.\n");
+      return;
+   }
+   $player{$p}{env}{COL} = $_;
+   print $_;
+   return;
+}
+      
+
+sub CmdAlias
+{
+   my ($p, $str) = @_;
+   my @count;
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   chomp;
+ 
+   if(/^$/)
+   {
+      tell_player($p, " Usage : alias [-p|-w|example|name[=value|undef]\n");
+      return;
+   }
+   elsif(/^alias.*$/)
+   {
+      tell_player($p, "That's probably not a good idea :>\n");
+      return;
+   }
+   elsif(/^example$/i)
+   {
+      tell_player($p, " Example : alias -p\n");
+      tell_player($p, " Example : alias c=commands all\n");
+      tell_player($p, " Example : alias c=undef\n");
+      return;
+   }
+   elsif(/^-p$/i)
+   {
+      banner($p, 70, '-', 'Defined aliases');
+      foreach my $key (sort(keys(%{$player{$p}{alias}})))
+      {
+         tell_player($p, " alias $key=$player{$p}{alias}{$key}\n");
+      }
+      banner($p, 70, '-', undef);
+      return;
+   }
+   elsif(/^-w$/i)
+   {
+      foreach my $key (keys(%{$player{$p}{alias}}))
+      {
+         delete $player{$p}{alias}{$key};
+      }
+      tell_player($p, "Wiped entire hash.\n");
+      return;
+   }
+   unless(/^(.*)=(.*)$/)
+   {
+      tell_player($p, " Usage : alias [-p|example|name[=value|undef]\n");
+      return;
+   }
+   $str = @count = keys(%{$player{$p}{alias}});
+   if($str > 20)
+   {
+      tell_player($p, "You cannot have more than 20 aliases.\n");
+      return;
+   }
+   if($2 eq 'undef')
+   {
+      tell_player($p, "Undefined $1\n");
+      delete $player{$p}{alias}{$1};
+      return;
+   }
+   $player{$p}{alias}{$1} = $2;
+   return;
+}
+   
+
+sub CmdGrant
+{
+   my($p, $str) = @_;
+   my ($person, $priv, $person_match, $priv_match);
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   chomp;
+ 
+   if(/^$/)
+   {
+      tell_player($p, " Usage : grant [person|example|list] [privilege]\n");
+      return;
+   }
+   elsif(/^example$/i)
+   {
+      tell_player($p, " Example : grant rohan su\n");
+      tell_player($p, " Example : grant list\n");
+      return;
+   }
+   elsif(/^list$/i)
+   {
+       banner($p, 70, '-', "Privilege list");
+       foreach my $key (sort(keys %privs))
+       {
+          tell_player($p, ") $key\n");
+       }
+       banner($p, 70, '-', undef);
+       return;
+    }
+   unless(/^\w+\s+\w+$/)
+   {
+      tell_player($p, " Usage : grant [person|example|list] [privilege]\n");
+      return;
+   }
+   ($person, $priv) = m/(\w+)\s+(\w+)$/;
+   $priv =~ tr/A-Z/a-z/;
+   $person =~ tr/A-Z/a-z/;
+   foreach my $key (keys %player)
+   {
+       if($player{$key}{name} eq $person)
+       {
+          $person_match = 1;
+          foreach my $key2 (keys %privs)
+	  {
+	     if($key2 eq $priv)
+	     {
+	        tell_player($player{$key}{socket}, "$player{$p}{name} has granted you $key2!\n");
+		$player{$key}{privs} |= $privs{$key2};
+		return;
+	     }
+	  }
+       }
+   }
+   if($person_match)
+   {
+      tell_player($p, "Couldn't find that privilege!\n");
+   }
+   else
+   {
+      tell_player($p, "Couldn't find anyone with the name of '$person'\n");
+   }
+   return;
+}
+    
+
+sub CmdRemove
+{
+   my($p, $str) = @_;
+   my ($person, $priv, $person_match, $priv_match);
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   chomp;
+ 
+   if(/^$/)
+   {
+      tell_player($p, " Usage : remove [person|example|list] [privilege]\n");
+      return;
+   }
+   elsif(/^example$/i)
+   {
+      tell_player($p, " Example : remove rohan su\n");
+      tell_player($p, " Example : remove list\n");
+      return;
+   }
+   elsif(/^list$/i)
+   {
+       banner($p, 70, '-', "Privilege list");
+       foreach my $key (sort(keys %privs))
+       {
+          tell_player($p, ") $key\n");
+       }
+       banner($p, 70, '-', undef);
+       return;
+    }
+   unless(/^\w+\s+\w+$/)
+   {
+      tell_player($p, " Usage : remove [person|example|list] [privilege]\n");
+      return;
+   }
+   ($person, $priv) = m/(\w+)\s+(\w+)$/;
+   $priv =~ tr/A-Z/a-z/;
+   $person =~ tr/A-Z/a-z/;
+   foreach my $key (keys %player)
+   {
+       if($player{$key}{name} eq $person)
+       {
+          $person_match = 1;
+          foreach my $key2 (keys %privs)
+	  {
+	     if($key2 eq $priv)
+	     {
+	        tell_player($player{$key}{socket}, "$player{$p}{name} has removed $key2 from you!\n");
+		$player{$key}{privs} &= ~$privs{$key2};
+		return;
+	     }
+	  }
+       }
+   }
+   if($person_match)
+   {
+      tell_player($p, "Couldn't find that privilege!\n");
+   }
+   else
+   {
+      tell_player($p, "Couldn't find anyone with the name of '$person'\n");
+   }
+   return;
+}
+    
+    
+sub CmdGag
+{
+   my ($p, $str) = @_;
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   chomp;
+   
+   if(/^$/)
+   {
+      tell_player($p, " Usage : gag [person|example] (toggle)\n");
+      return;
+   }
+   elsif(/^example$/i)
+   {
+      tell_player($p, " Example : gag $player{$p}{name}\n");
+      return;
+   }
+   foreach my $gagger (keys %player)
+   {
+      if($player{$gagger}{name} eq $_)
+      {
+         $player{$gagger}{state} ^= GAG;
+	 if($player{$gagger}{state} & GAG)
+	 {
+	    tell_player($p, "You gag $player{$gagger}{name} for a bit.\n");
+	    tell_player($player{$gagger}{socket}, "Someone pulls back your head and shoves a sock in your mouth.\n");
+	    return;
+	 }
+	 else
+	 {
+	    tell_player($p, "You jerk the sock out of $player{$gagger}{name}'s mouth!\n");
+	    tell_player($player{$gagger}{socket}, "You cough violently as something is jerked out of your mouth!\n");
+	    return;
+	 }
+       }
+   }
+   tell_player($p, "Can't find anyone of the name '$_'\n");
+   return;
+}
+   
+
+sub CmdWho
+{
+   my ($p, $str) = @_;
+   my %hack;
+   my %rev;
+   my ($k, $v, $srch, $flags);
+   my @tmp;
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   chomp;
+   $str = $_;
+   if(/^$/)
+   {
+      tell_player($p, " Usage : who [a-z|all|ascend|descend|example|su|time|regular expression]\n");
+      return;
+   }
+   elsif(/^example$/i)
+   {
+      tell_player($p, " Example : who a\n");
+      tell_player($p, " Example : who all\n");
+      tell_player($p, " Example : who ascend\n");
+      tell_player($p, " Example : who descend\n");
+      tell_player($p, " Example : who \\w\n");
+      return;
+   }
+   elsif(/^ascend/i)
+   {
+      banner($p, 70, '-', 'Who <ascending>');
+      while(($k, $v) = (each %player))
+      {
+         $hack{$$v{name}} = $k;
+      }
+      foreach my $who (reverse(sort(keys(%hack))))
+      {
+         if($player{$hack{$who}}{state} & LOGGED_IN )
+	 {
+            tell_player($p, "$who $player{$hack{$who}}{title}\n");
+	 }
+      }
+      $k = @tmp = (keys %hack);
+      banner($p, 70, '-', "$k players");
+      return;
+   }
+   elsif(/^descend/i || /^all/i)
+   {
+      banner($p, 70, '-', 'Who <descending>');
+      while(($k, $v) = (each %player))
+      {
+         $hack{$$v{name}} = $k if($$v{state} & LOGGED_IN);
+      }
+      foreach my $who (sort(keys(%hack)))
+      {
+         if($player{$hack{$who}}{state} & LOGGED_IN)
+	 {
+            tell_player($p, "$who $player{$hack{$who}}{title}\n");
+	 }
+      }
+      $k = @tmp = (keys %hack);
+      banner($p, 70, '-', "$k players");
+      return;
+   }
+   elsif(/^su/i)
+   {
+      $k = 0;
+      banner($p, 70, '-', 'Who <super user>');
+      foreach my $key (keys(%player))
+      {
+         if($player{$key}{privs} >= SU)
+	 {
+	    $k++;
+	    tell_player($p, "$player{$key}{name} $player{$key}{title}\n");
+	 }
+      }
+      banner($p, 70, '-', "$k players");
+      return;
+   }
+   elsif(/^time/i)
+   {
+      tell_player($p, " This feature is currently disabled.\n");
+      return;
+   }
+   else
+   {
+      unless(re_is_valid($str))
+      {
+         tell_player($p, "$str is an invalid regular expression.\n");
+	 return;
+      }
+      if(/^[a-zA-Z]$/)
+      {
+         $flags = 1;
+	 $srch = "^$_";
+      }
+      $srch or $srch = $str;
+      if($flags eq 1)
+      {
+         banner($p, 70, '-', "Who starting with $srch");
+      }
+      else
+      {
+         banner($p, 70, '-', "Who matching $_");
+      }
+      while(($k, $v) = (each %player))
+      {
+         $hack{$$v{name}} = $k;
+      }
+      foreach my $who (sort(keys(%hack)))
+      {
+         if($player{$hack{$who}}{state} & LOGGED_IN)
+	 {
+            $rev{$who} = "$who $player{$hack{$who}}{title}";
+	 }
+      }
+      $v = 0;
+      foreach my $key (keys %rev)
+      {
+         $_ = $rev{$key};
+	 /$srch/ or next;
+	 $rev{$key} =~ s/($srch)/{bold}$1 {nor}/;
+	 tell_player($p, "$rev{$key}\n");
+	 $v++;
+      }
+      banner($p, 70, '-', "$v players");
+      return;
+   }
+}
+
+sub CmdShowColor
+{
+   my $p = shift;
+   my $string;
+   
+   banner($p, 70, '-', 'Available Colors');
+   foreach my $key (sort(keys %c))
+   {
+   	$string .= sprintf("  %-14s%sThis is what the color would look like on your screen%s\n", $key, $c{$key}, $c{nor});
+   }
+   tell_player($p, $string);
+   banner($p, 70, '-', undef);
+}
+
+sub CmdTitle
+{
+   my ($p, $str) = @_;
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   chomp;
+   if(length($_) > 50)
+   {
+      tell_player($p, "Titles cannot be over 50 characters in length.\n");
+      return;
+   }
+   elsif(/^example$/i)
+   {
+      tell_player($p, " Example : title i'm a silly spoon!\n");
+      return;
+   }
+   elsif(/\w/ || /\d/ || /\W/)
+   {
+      $player{$p}{title} = $_;
+      tell_player($p, "You set your title to be ...\n$player{$p}{name} $player{$p}{title}\n");
+      return;
+   }
+   else
+   {
+      tell_player($p, " Usage : title [title|example]\n");
+      return;
+   }
+}
+
+sub CmdLook
+{
+   my $p = shift;
+   
+   foreach my $sock (keys %player)
+   {
+      if($sock ne $p && $player{$sock}{state} & LOGGED_IN)
+      {
+         tell_player($p, "$player{$sock}{name} $player{$sock}{title}\n");
+      }
+   }
+   tell_player($p, "\n");
+}
+
+sub CmdSave
+{
+   my $p = shift;
+   my $flags = shift;
+   
+   tell_player($p, "Saving character ...\n") if($flags ne 1);
+   save_player($p);
+}
+
+sub CmdSay
+{
+   my ($p, $str) = @_;
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   if(/^example$/i)
+   {
+      tell_player($p, " Example : say hello, world!\n");
+      return;
+   }
+   elsif(/\w/ || /\d/ || /\W/)
+   {
+      tell_everyone($p, "{cyan}- $player{$p}{name} says, '$_ {nor}'\n");
+      tell_player($p, "You say, '$_ {nor}'\n");
+   }
+   else
+   {
+      tell_player($p, " Usage : say [message|example]\n");
+   }
+   return;
+}
+      
+sub CmdThink
+{
+   my ($p, $str) = @_;
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   if(/^example$/i)
+   {
+      tell_player($p, " Example : think i have to stop thinking to myself\n");
+      return;
+   }
+   elsif(/\w/ || /\d/ || /\W/)
+   { 
+      tell_everyone($p, "{cyan}- $player{$p}{name} thinks . o O ( $_ {nor})\n");
+      tell_player($p, "You think . o O ( $_ {nor})\n");
+   }
+   else
+   {
+      tell_player($p, " Usage : think [thought|example]\n");
+   }
+   return;
+}
+      
+sub CmdEmote
+{
+   my ($p, $str) = @_;
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   if(/^example$/i)
+   {
+      tell_player($p, " Example : emote smiles!\n");
+      tell_player($p, " Example : emote 's mouth drops!\n");
+      return;
+   }
+   elsif(/^'(.*)\s+(.*)$/)
+   {
+      tell_everyone($p, "{cyan}- $player{$p}{name}'$1 $2 {nor}\n");
+      tell_player($p, "You emote:  $player{$p}{name}'$1 $2 {nor}\n");
+   }
+   elsif(/\w/ || /\d/ || /\W/)
+   {
+      tell_everyone($p, "{cyan}- $player{$p}{name} $_ {nor}\n");
+      tell_player($p, "You emote: $player{$p}{name} $_ {nor}\n");
+   }
+   else
+   {
+      tell_player($p, " Usage : emote [emotion|'literal emotion|example]\n");
+   }
+   return;
+}
+    
+
+sub CmdTell
+{
+   my ($p, $str) = @_;
+   my @proposed;
+   my %revised; # so i don't have to cross check duplicates
+   my ($msg, $error);
+   my $i = 0;
+   my ($total, $list);
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   
+   if(/^example$/i)
+   {
+      tell_player($p, " Example : tell rohan hello you spoon!\n");
+      tell_player($p, " Example : tell rohan,liz,chrysostom now we have a multi!\n");
+      return;
+   }
+   elsif(/\w+,/) # perl rules, check this out
+   {
+      ($str, $msg) = /^(\w+,.*\s)(.*)$/;
+      @proposed = split(',', $1);
+      NEXTP:
+      while(scalar(@proposed))
+      {
+         $str = shift(@proposed);
+         $str =~ s/^\s+//;
+         $str =~ s/\s+$//;
+	 
+	 $_ = $str;
+	 /\w+/ or next;
+         foreach my $sock (keys %player)
+	 {
+	    if($_ eq $player{$p}{name})
+	    {
+	       $error .= "`$_' is you, spoon!\n";
+	       goto NEXTP;
+	    }
+	    elsif($player{$sock}{name} eq $_)
+	    {
+	       $revised{$_} = $_;
+	       goto NEXTP;
+	    }
+
+	 }
+	 $error .= "Couldn't find anyone with the name of '$_'\n";
+      }
+      # might as well reuse old vars
+      @proposed = (values %revised);
+      $total = @proposed;
+      if($total eq 0)
+      {
+         tell_player($p, $error) if $error;
+         tell_player($p, " Usage : tell [player(s),...|example] [message]\n");
+	 return;
+      }
+      elsif($total eq 1)
+      {
+         @proposed = (keys %revised);
+         $list = $proposed[0];
+      }
+      elsif($total eq 2)
+      {
+         @proposed = (keys %revised);
+	 $list = "$proposed[0] and $proposed[1]";
+      }
+      else
+      {
+         foreach my $person (keys %revised)
+         {
+            ++$i;
+	    if($i eq $total)
+	    {
+	       $list .= "and $person";
+	    }
+	    else
+	    {
+               $list .= "$person, ";
+	    }
+         }
+      }
+      foreach my $sock (keys %player)
+      {
+         foreach my $inst (keys %revised)
+	 {
+	    if($player{$sock}{name} eq $inst)
+	    {
+	        if($total eq 1)
+		{
+		   $_ = 'you';
+		}
+		else
+		{
+		   $_ = $list;
+		   s/$player{$sock}{name}/you/;
+		}
+                tell_player($player{$sock}{socket}, "{bold}> $player{$p}{name} tells $_ '$msg' {nor}\n");
+	    }
+         }
+      }
+      tell_player($p, $error) if $error;
+      tell_player($p, "You tell $list '$msg'\n");
+      return;
+   }
+
+   /^(\w+)\s+(.*)$/;
+   unless($1 && $2)
+   {
+      tell_player($p, " Usage : tell [person(s),...|example] [message]\n");
+      return;
+   }
+   if($1 eq $player{$p}{name})
+   {
+      tell_player($p, "`$1' is you, spoon!\n");
+      return;
+   }
+   foreach my $sock (keys %player)
+   {
+      if($1 eq $player{$sock}{name})
+      {
+         tell_player($sock, "{bold}> $player{$p}{name} tells you, '$2' {nor}\n");
+	 tell_player($p, "You tell $player{$sock}{name}, '$2 {nor}'\n");
+	 return;
+      }
+   }
+   tell_player($p, "Couldn't find anyone with the name '$1'\n");
+}
+   
+
+sub CmdRemote
+{
+   my ($p, $str) = @_;
+   my @proposed;
+   my %revised; # so i don't have to cross check duplicates
+   my ($msg, $error);
+   my $i = 0;
+   my ($total, $list);
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   
+   if(/^example$/i)
+   {
+      tell_player($p, " Example : remote rohan grins!\n");
+      tell_player($p, " Example : remote rohan,liz,chrysostom grins, now we have a multi!\n");
+      return;
+   }
+   elsif(/\w+,/) # perl rules, check this out
+   {
+      ($str, $msg) = /^(\w+,.*\s)(.*)$/;
+      @proposed = split(',', $1);
+      NEXTP:
+      while(scalar(@proposed))
+      {
+         $str = shift(@proposed);
+         $str =~ s/^\s+//;
+         $str =~ s/\s+$//;
+	 
+	 $_ = $str;
+	 /\w+/ or next;
+         foreach my $sock (keys %player)
+	 {
+	    if($_ eq $player{$p}{name})
+	    {
+	       $error .= "`$_' is you, spoon!\n";
+	       goto NEXTP;
+	    }
+	    elsif($player{$sock}{name} eq $_)
+	    {
+	       $revised{$_} = $_;
+	       goto NEXTP;
+	    }
+
+	 }
+	 $error .= "Couldn't find anyone with the name of '$_'\n";
+      }
+      # might as well reuse old vars
+      @proposed = (values %revised);
+      $total = @proposed;
+      if($total eq 0)
+      {
+         tell_player($p, $error) if $error;
+         tell_player($p, " Syntax : remote [person(s),...|example] [emotion]\n");
+	 return;
+      }
+      elsif($total eq 1)
+      {
+         @proposed = (keys %revised);
+         $list = $proposed[0];
+      }
+      elsif($total eq 2)
+      {
+         @proposed = (keys %revised);
+	 $list = "$proposed[0] and $proposed[1]";
+      }
+      else
+      {
+         foreach my $person (keys %revised)
+         {
+            ++$i;
+	    if($i eq $total)
+	    {
+	       $list .= "and $person";
+	    }
+	    else
+	    {
+               $list .= "$person, ";
+	    }
+         }
+      }
+      foreach my $sock (keys %player)
+      {
+         foreach my $inst (keys %revised)
+	 {
+	    if($player{$sock}{name} eq $inst)
+	    {
+	        if($total eq 1)
+		{
+		   $_ = 'you';
+		}
+		else
+		{
+		   $_ = $list;
+		   s/$player{$sock}{name}/you/;
+		}
+                tell_player($player{$sock}{socket}, "{bold}> $player{$p}{name} $msg {nor}\n");
+	    }
+         }
+      }
+      tell_player($p, $error) if $error;
+      tell_player($p, "You emote to $list:  $player{$p}{name} $msg\n");
+      return;
+   }
+
+   /^(\w+)\s+(.*)$/;
+   unless($1 && $2)
+   {
+      tell_player($p, " Usage : remote [person(s),...|example] [emotion]\n");
+      return;
+   }
+   if($1 eq $player{$p}{name})
+   {
+      tell_player($p, "`$1' is you, spoon!\n");
+      return;
+   }
+   foreach my $sock (keys %player)
+   {
+      if($1 eq $player{$sock}{name})
+      {
+         tell_player($sock, "{bold}> $player{$p}{name} $2 {nor}\n");
+	 tell_player($p, "You emote to $player{$sock}{name}:  $player{$p}{name} $2 {nor}'\n");
+	 return;
+      }
+   }
+   tell_player($p, "Couldn't find anyone with the name '$1'\n");
+}
+   
+sub CmdPremote
+{
+   my ($p, $str) = @_;
+   my @proposed;
+   my %revised; # so i don't have to cross check duplicates
+   my ($msg, $error, $ps);
+   my $i = 0;
+   my ($total, $list);
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   
+   if(/^example$/i)
+   {
+      tell_player($p, " Example : premote rohan 'll get yoy one day, gadget!\n");
+      tell_player($p, " Example : premote rohan,liz,chrysostom 's mouth drops, now we have a multi!\n");
+      return;
+   }
+   unless(/^\w+,.*\s+'.*\s+.*$/ || /^\w+\s+'.*\s+.*$/)
+   {
+      tell_player($p, " Usage: premote [person(s),...|example] ['literal] [emotion]\n");
+      return;
+   }
+   if(/\w+,/) # perl rules, check this out
+   {
+      ($str, $ps, $msg) = /^(\w+,.*)\s+'(.*)\s+(.*)$/;
+      @proposed = split(',', $1);
+      NEXTP:
+      while(scalar(@proposed))
+      {
+         $str = shift(@proposed);
+         $str =~ s/^\s+//;
+         $str =~ s/\s+$//;
+	 
+	 $_ = $str;
+	 /\w+/ or next;
+         foreach my $sock (keys %player)
+	 {
+	    if($_ eq $player{$p}{name})
+	    {
+	       $error .= "`$_' is you, spoon!\n";
+	       goto NEXTP;
+	    }
+	    elsif($player{$sock}{name} eq $_)
+	    {
+	       $revised{$_} = $_;
+	       goto NEXTP;
+	    }
+
+	 }
+	 $error .= "Couldn't find anyone with the name of '$_'\n";
+      }
+      # might as well reuse old vars
+      @proposed = (values %revised);
+      $total = @proposed;
+      if($total eq 0)
+      {
+         tell_player($p, $error) if $error;
+         tell_player($p, " Syntax : premote [person(s),...|exampe] ['literal] [emotion]\n");
+	 return;
+      }
+      elsif($total eq 1)
+      {
+         @proposed = (keys %revised);
+         $list = $proposed[0];
+      }
+      elsif($total eq 2)
+      {
+         @proposed = (keys %revised);
+	 $list = "$proposed[0] and $proposed[1]";
+      }
+      else
+      {
+         foreach my $person (keys %revised)
+         {
+            ++$i;
+	    if($i eq $total)
+	    {
+	       $list .= "and $person";
+	    }
+	    else
+	    {
+               $list .= "$person, ";
+	    }
+         }
+      }
+      foreach my $sock (keys %player)
+      {
+         foreach my $inst (keys %revised)
+	 {
+	    if($player{$sock}{name} eq $inst)
+	    {
+	        if($total eq 1)
+		{
+		   $_ = 'you';
+		}
+		else
+		{
+		   $_ = $list;
+		   s/$player{$sock}{name}/you/;
+		}
+                tell_player($player{$sock}{socket}, "{bold}> $player{$p}{name}'$ps $msg {nor}\n");
+	    }
+         }
+      }
+      tell_player($p, $error) if $error;
+      tell_player($p, "You premote to $list:  $player{$p}{name}'$ps $msg\n");
+      return;
+   }
+
+   /^(\w+)\s+'(.*)\s+(.*)$/;
+   unless($1 && $2)
+   {
+      tell_player($p, " Usage : premote [person(s),...|example] [literal] [emotion]\n");
+      return;
+   }
+   if($1 eq $player{$p}{name})
+   {
+      tell_player($p, "`$1' is you, spoon!\n");
+      return;
+   }
+   foreach my $sock (keys %player)
+   {
+      if($1 eq $player{$sock}{name})
+      {
+         tell_player($sock, "{bold}> $player{$p}{name}'$2 $3 {nor}\n");
+	 tell_player($p, "You premote to $player{$sock}{name}:  $player{$p}{name}'$2 $3 {nor}'\n");
+	 return;
+      }
+   }
+   tell_player($p, "Couldn't find anyone with the name '$1'\n");
+}
+   
+sub CmdCommands
+{
+   my ($p, $str) = @_;
+   my ($srch, $flags);
+   my $tmp;
+   
+   $srch = 0;
+   $_ = $str;
+   
+   s/^\s+//;
+   s/\s+$//;
+   if(/^example$/i)
+   {
+      tell_player($p, " Example : commands a\n");
+      tell_player($p, " Example : commands all\n");
+      tell_player($p, " Example : commands ascend\n");
+      tell_player($p, " Example : commands \\w\n");
+      return;
+   }
+   elsif(/^psu$/i && $player{$p}{privs} & PSU)
+   {
+      banner($p, 70, '-', 'Commands <psu>');
+      foreach my $cmd (reverse(sort(keys %commands)))
+      {
+         if($commands{$cmd}{flags} ne PSU)
+	 {
+	     next;
+	 }
+	 $tmp .= " {brown}$cmd {nor}";
+      }
+      tell_player($p, wrapme($player{$p}{env}{COL}, $tmp));
+      tell_player($p, "\n");
+      banner($p, 70, '-', undef);
+      return;
+   }
+   elsif(/^warn$/i && $player{$p}{privs} & WARN)
+   {
+      banner($p, 70, '-', 'Commands <warn>');
+      foreach my $cmd (reverse(sort(keys %commands)))
+      {
+         if($commands{$cmd}{flags} ne SU)
+	 {
+	     next;
+	 }
+	 $tmp .= " {white}$cmd {nor}";
+      }
+      tell_player($p, wrapme($player{$p}{env}{COL}, $tmp));
+      tell_player($p, "\n");
+      banner($p, 70, '-', undef);
+      return;
+   }
+   elsif(/^su$/i && $player{$p}{privs} & SU)
+   {
+      banner($p, 70, '-', 'Commands <su>');
+      foreach my $cmd (reverse(sort(keys %commands)))
+      {
+         if($commands{$cmd}{flags} ne SU)
+	 {
+	     next;
+	 }
+	 $tmp .= " {yellow}$cmd {nor}";
+      }
+      tell_player($p, wrapme($player{$p}{env}{COL}, $tmp));
+      tell_player($p, "\n");
+      banner($p, 70, '-', undef);
+      return;
+   }
+   elsif(/^asu$/i && $player{$p}{privs} & ASU)
+   {
+      banner($p, 70, '-', 'Commands <asu>');
+      foreach my $cmd (reverse(sort(keys %commands)))
+      {
+         if($commands{$cmd}{flags} ne ASU)
+	 {
+	     next;
+	 }
+	 $tmp .= " {magenta}$cmd {nor}";
+      }
+      tell_player($p, wrapme($player{$p}{env}{COL}, $tmp));
+      tell_player($p, "\n");
+      banner($p, 70, '-', undef);
+      return;
+   }
+   elsif(/^la$/i && $player{$p}{privs} & LOWER_ADMIN)
+   {
+      banner($p, 70, '-', 'Commands <la>');
+      foreach my $cmd (reverse(sort(keys %commands)))
+      {
+         if($commands{$cmd}{flags} ne LOWER_ADMIN)
+	 {
+	     next;
+	 }
+	 $tmp .= " {cyan}$cmd {nor}";
+      }
+      tell_player($p, wrapme($player{$p}{env}{COL}, $tmp));
+      tell_player($p, "\n");
+      banner($p, 70, '-', undef);
+      return;
+   }
+   elsif(/^admin$/i && $player{$p}{privs} & ADMIN)
+   {
+      banner($p, 70, '-', 'Commands <admin>');
+      foreach my $cmd (reverse(sort(keys %commands)))
+      {
+         if($commands{$cmd}{flags} ne ADMIN)
+	 {
+	     next;
+	 }
+	 $tmp .= " {lightred}$cmd {nor}";
+      }
+      tell_player($p, wrapme($player{$p}{env}{COL}, $tmp));
+      tell_player($p, "\n");
+      banner($p, 70, '-', undef);
+      return;
+   }
+   elsif(/^coder$/i && $player{$p}{privs} & CODER)
+   {
+      banner($p, 70, '-', 'Commands <coder>');
+      foreach my $cmd (reverse(sort(keys %commands)))
+      {
+         if($commands{$cmd}{flags} ne CODER)
+	 {
+	     next;
+	 }
+         $tmp .= " {green}$cmd {nor}";
+      }
+      tell_player($p, wrapme($player{$p}{env}{COL}, $tmp));
+      tell_player($p, "\n");
+      banner($p, 70, '-', undef);
+      return;
+   }
+   elsif(/^ascend/i)
+   {
+      banner($p, 70, '-', 'Commands <ascending>');
+      foreach my $cmd (reverse(sort(keys %commands)))
+      {
+         if($player{$p}{privs} <= $commands{$cmd}{flags})
+	 {
+	     next;
+	 }
+	 $tmp .= " $cmd";
+      }
+      tell_player($p, wrapme($player{$p}{env}{COL}, $tmp));
+      tell_player($p, "\n");
+      banner($p, 70, '-', undef);
+      return;
+   }
+   elsif(/^descend/i || /^all/i)
+   {
+      banner($p, 70, '-', 'Commands <descending>');
+      foreach my $cmd (sort(keys %commands))
+      {
+         if($player{$p}{privs} < $commands{$cmd}{flags})
+	 {
+	     next;
+	 }
+         $tmp .= " $cmd";
+      }
+      tell_player($p, wrapme($player{$p}{env}{COL}, $tmp));
+      tell_player($p, "\n");
+      CmdAlias($p, '-p');
+      return;
+   }
+   elsif(/^color/i)
+   {
+      banner($p, 70, '-', 'Commands <colored>');
+      foreach my $cmd (sort(keys %commands))
+      {
+         if($player{$p}{privs} < $commands{$cmd}{flags})
+	 {
+	     next;
+	 }
+         if($commands{$cmd}{flags} & PSU)
+	 {
+	    $tmp .= " {brown}$cmd {nor}";
+         }
+	 elsif($commands{$cmd}{flags} & SU)
+         { 
+	    $tmp .= " {yellow}$cmd {nor}";
+	 }
+	 elsif($commands{$cmd}{flags} & ASU)
+	 {
+	    $tmp .= " {magenta}$cmd {nor}";
+	 }
+	 elsif($commands{$cmd}{flags} & LOWER_ADMIN)
+	 {
+	    $tmp .= " {cyan}$cmd {nor}";
+	 }
+	 elsif($commands{$cmd}{flags} & ADMIN)
+	 {
+	    $tmp .= " {lightred}$cmd {nor}";
+	 }
+	 elsif($commands{$cmd}{flags} & CODER)
+	 {
+	    $tmp .= " {green}$cmd {nor}";
+         }
+         else
+	 {
+	     $tmp .= " $cmd";
+         }
+      }
+      tell_player($p, wrapme($player{$p}{env}{COL}, $tmp));
+      tell_player($p, "\n");
+      banner($p, 70, '-', undef);
+      return;
+   }
+   elsif((/\w/ || /\d/ || /\W/) && (/[^\s]/))
+   {
+      if(/^[a-zA-Z0-9]$/)
+      {
+         $flags = 1;
+	 $srch = "^$_.*\$";
+      }
+      $srch or $srch = $_;
+      unless(re_is_valid($srch))
+      {
+         tell_player($p, "$srch is an invalid regular expression.\n");
+	 return;
+      }
+      if($flags && $flags eq 1)
+      {
+         banner($p, 70, '-', "Commands beginning with: $_ ($srch)");
+      }
+      else
+      {
+         banner($p, 70, '-', "Commands matching: $srch");
+      }
+      foreach my $cmd (keys %commands)
+      {
+          $_ = $cmd;
+	  /$srch/ or next;
+          if($player{$p}{privs} < $commands{$cmd}{flags})
+ 	  {
+	      next;
+	  }
+	  $tmp .= " $cmd";
+      }
+      tell_player($p, wrapme($player{$p}{env}{COL}, $tmp));
+      tell_player($p, "\n");
+      banner($p, 70, '-', undef);
+      return;
+   }
+   else
+   {
+      tell_player($p, " Usage : commands [a-z|all|acsend|color|decsend|");
+      tell_player($p, "warn|") if ($player{$p}{privs} & WARN);
+      tell_player($p, "psu|") if ($player{$p}{privs} & PSU);
+      tell_player($p, "su|") if ($player{$p}{privs} & SU);
+      tell_player($p, "asu|") if ($player{$p}{privs} & ASU);
+      tell_player($p, "la|") if ($player{$p}{privs} & LOWER_ADMIN);
+      tell_player($p, "admin|") if ($player{$p}{privs} & ADMIN);
+      tell_player($p, "coder|") if ($player{$p}{privs} & CODER);
+      tell_player($p, "example|regular expression]\n");
+      return;
+   }
+}
+sub CmdQuit
+{
+   my $sock = shift;
+   
+   $player{$sock}{state} |= LOGOUT;
+   return;
+}
+
+sub CmdShout
+{
+   my ($p, $str) = @_;
+   
+   $_ = $str;
+   s/^\s+//;
+   s/\s+$//;
+   if(/^example$/i)
+   {
+      tell_player($p, " Example : shout i'm a rought bastard!\n");
+      return;
+   }
+   elsif(/\w/ || /\d/ || /\W/)
+   {
+      tell_everyone($p, "{brown}- $player{$p}{name} shouts, '$_{nor}'\n");
+      tell_player($p, "You shout, '$_{nor}'\n");
+   }
+   else
+   {
+      tell_player($p, " Usage : shout [message|example]\n");
+   }
+   return;
+}
+
+
+###############################################################
+# Main begins here                                             
+###############################################################
+
+AGAIN:
+while(1)
+{
+   foreach my $sock ($sel->can_read(2))
+   {
+      if($sock eq $listen_sock)
+      {
+         if($control{config}{server}{connections} > 100)
+	 {
+            $sock = $listen_sock->accept;
+	    add_client_sock($sock);
+	    remove_socket($sock, 'over-flow');
+	    goto AGAIN;
+	 }
+         $sock = $listen_sock->accept;
+	 add_client_sock($sock);
+      }
+      else
+      {
+         process_input($sock);
+      }
+      
+      if($player{$sock}{state} & LOGOUT)
+      {
+         SafeQuit($sock);
+      }
+
+   }
+
+   foreach my $sock ($sel->can_write(2))
+   {
+      if(exists $outbuffer{$player{$sock}{socket}})
+      {
+         process_output($player{$sock}{socket});
+      }
+   }
+}

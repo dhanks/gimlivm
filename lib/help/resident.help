@@ -1,0 +1,106 @@
+# Resident help file
+# Format:
+# [type]::[key]
+# text,...
+
+resident::alias|aliases
+=bold=NAME=nor=
+        alias - create a shortcut for commands
+
+=bold=SYNOPSIS=nor=
+	alias [-p|-w|example|name[=value|undef]
+
+=bold=DESCRIPTION=nor=
+	=bold=alias=nor= can be used for quick hacks or extensive compiling
+	of complex commands.  It's based on a key value pair,
+	seperated with an equal '='.
+
+=bold=OPTIONS=nor=
+	-p	This option will return all personal defined aliases
+		separated by newlines.
+	
+	-w	This option wipes your personal alias hash.
+
+	examp.. This will return example usage of the command.
+
+	name=.. This key value pair is compiled on name=value,
+		whereby name will be your new defined alias and value
+		will be the resulting output, unless the value is
+		equal to 'undef' then the key will be wiped from
+		the hash.
+
+resident::colorlist
+=bold=NAME=nor=
+	colorlist - view the avaliable colors
+
+=bold=SYNOPSIS=nor=
+	colorlist
+
+=bold=OPTIONS=nor=
+	No available options
+
+resident::commands
+=bold=NAME=nor=
+	commands - list all available commands
+
+=bold=SYNOPSIS=nor=
+	commands [a-z|all|acsend|color|decsend|rank|example|regular expression]
+
+=bold=OPTIONS=nor=
+        a-z     This options lets you specify a filter based on your
+                choice of a-z; it's compiled upon the first character
+                of each line, hence 'commands a' will return all lines
+                beginning with 'a'.
+
+        all     This option simply lists all commands available
+		without any filtering.
+
+        ascend  All commands shall be outputted in ascending order
+                ranked upon the first character of each line.
+		
+        desce.. Same as above, instead the output is filtered in
+                descending order.
+
+        examp.. This will return example usage of the command.
+
+
+
+resident::who|w
+=bold=NAME=nor=
+	who - list players that are currently online
+
+=bold=SYNOPSIS=nor=
+	who [a-z|all|ascend|descend|example|su|time|regular expression]
+
+=bold=DESCRIPTION=nor=
+	=bold=who=nor= is flexible enough to be used in several different ways.
+	Most commonly used options are 'all' or 'a-z'.  'who' will
+	return a list seperated by newlines which is compiled upon your
+	current environment varible COL.
+
+=bold=OPTIONS=nor=
+	a-z	This options lets you specify a filter based on your
+		choice of a-z; it's compiled upon the first character
+		of each line, hence =bold=who a=nor= will return all lines
+		beginning with 'a'.
+
+	all	This option simply lists all players who are current
+		online without any filtering.
+
+	ascend	All players shall be outputted in ascending order
+		ranked upon the first character of each line, which
+		starts with the players' name.
+
+	desce.. Same as above, instead the output is filtered in
+		descending order.
+
+	examp.. This will return example usage of the command.
+
+	su	Output will be filtered on players' rank, which
+		is super-user or higher.
+
+	time	This option is deprecated.
+
+	regul.. You may optionally specify your own filtering using
+		regular expressions.  See =bold=man re=nor= for details.
+

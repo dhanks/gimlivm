@@ -1,0 +1,98 @@
+% LaTeX document produced by pod2latex from "driver.pod".
+% The followings need be defined in the preamble of this document:
+%\def\C++{{\rm C\kern-.05em\raise.3ex\hbox{\footnotesize ++}}}
+%\def\underscore{\leavevmode\kern.04em\vbox{\hrule width 0.4em height 0.3pt}}
+%\setlength{\parindent}{0pt}
+
+\section{DRIVER}%
+\index{DRIVER}
+
+\subsection*{NAME}\begin{verbatim}
+  ___ _       _ _     __  __
+ / __(_)_ __ | (_)_ _|  \/  |
+| (_ | | '  \| | \ V / |\/| |
+ \___|_|_|_|_|_|_|\_/|_|  |_|
+\end{verbatim}
+
+GimliVM --- interactive talker environment
+
+\subsection*{SYNOPSIS}
+driver {\tt [}options{\tt ]}
+
+\subsection*{DESCRIPTION}
+GimliVM opens up a predefined port allowing external 
+connections to connect in its secure environment.  
+Persons connected have a wide-varity of commands and 
+options at their dispense, to better communicate with 
+other connected persons.  Options and so forth can be 
+tuned in the configuration file, which is listed in 
+the MANIFEST and documentation.
+
+\subsection*{OPTIONS}%
+\index{OPTIONS}
+
+\begin{description}
+
+\item[-v, --verbose]%
+\index{-v, --verbose@-v, --verbose}%
+\hfil\\
+Toggles the \$verbose program flag, producing extra
+debugging output.
+
+\item[-c, --config]%
+\index{-c, --config@-c, --config}%
+\hfil\\
+You may exlcusively specifiy your configuration file
+in the mannger of -c=$<$path$>$ or --config=$<$path$>$
+
+\item[-p, --port]%
+\index{-p, --port@-p, --port}%
+\hfil\\
+Setting this option with --port=$<$port number$>$ will
+over-ride any pre-existing port varibles, including
+from the configuration file.
+
+\item[-f, --fork]%
+\index{-f, --fork@-f, --fork}%
+\hfil\\
+Program will be forked off into the background.
+
+\item[-q, --quit]%
+\index{-q, --quit@-q, --quit}%
+\hfil\\
+Program executes in quiet mode, nothing will be
+written to STDOUT
+
+\end{description}
+
+\subsection*{BUGS}
+Millions upon millions, but none that I'm aware of.  Please send bug
+reports to bugs@gimlivm.org
+
+\subsection*{AUTHOR}
+Douglas Richard Hanks, Jr. <$<$dhanks@resourcephoenix.com$>$>
+
+\subsection*{COPYRIGHT}%
+\index{COPYRIGHT}
+\begin{verbatim}
+ GimliVM - interactive talker environment
+ Copyright (C) 2000  Douglas Richard Hanks, Jr.
+\end{verbatim}
+\begin{verbatim}
+ This program is free software; you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation; either version 2 of the License, or
+ (at your option) any later version.
+\end{verbatim}
+\begin{verbatim}
+ This program is distributed in the hope that it will be useful,
+ but WITHOUT ANY WARRANTY; without even the implied warranty of
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ GNU General Public License for more details.
+\end{verbatim}
+\begin{verbatim}
+ You should have received a copy of the GNU General Public License
+ along with this program; if not, write to the Free Software
+ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+\end{verbatim}
+

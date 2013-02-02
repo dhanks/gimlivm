@@ -1,0 +1,29 @@
+# Hello,
+# Welcome to the GimliVM Configuration file.  Things that need to be
+# changed will be marked with ***SET ME***.  These values are
+# required to be set, or the program will not function properly.
+#
+# This configuration file is highly commented, and you shouldn't
+# have trouble making the proper changes.  Please refer to
+# doc/config if you require any further help.
+
+<config server>			# Server definations
+	name = GimliVM		# Name of your talker *** SET ME***
+	port = 8080		# Port to run the talker on
+	release = System V Release 1.5.0 # The release of GimliVM
+	
+	path = /home/dhanks/GimliVM-SRV1.5.0 # ***SET ME*** to the 
+					   # talker's path
+
+	logfile = $path/var/log/messages   # where logfiles go
+					   # $path is allowed :)
+	boot_time = 0 # The values that follow are fillers
+	connections = 0
+	login = gimli login:
+</config>
+
+<config logfile> # Logfile definations
+	format = %b %d %T:: # (man strftime) to see which varibles
+			    # are available
+	file = ../var/log/messages
+</config>

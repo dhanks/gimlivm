@@ -1,0 +1,46 @@
+Jul 31 18:32:54::SVR1 Booting @ Mon Jul 31 18:32:54 2000
+Jul 31 18:32:54::Alive and kicking on 2000
+Jul 31 18:33:12::New connection from  (208.246.65.99:55706)
+terminal size ...
+joining inbuf ..
+joining buffer ..
+wants to echo ...
+wants to echo ...
+joining buffer ..
+joining buffer ..
+Jul 31 18:33:51::New connection from  (127.0.0.1:2845)
+terminal size ...
+joining inbuf ..
+joining buffer ..
+joining buffer ..
+Jul 31 18:35:01::New connection from  (208.246.65.70:1075)
+joining inbuf ..
+joining inbuf ..
+joining inbuf ..
+joining buffer ..
+joining inbuf ..
+joining inbuf ..
+joining buffer ..
+joining inbuf ..
+Jul 31 18:35:18::Disconnecting socket [SafeQuit]  (208.246.65.70:1075)
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+joining buffer ..
+Jul 31 18:36:33::sub entered an invalid hard-function: CODE(0x8226a18) :: passwd :: 
+Jul 31 18:36:33::Disconnecting socket [invalid func]  (127.0.0.1:2845)
+joining buffer ..

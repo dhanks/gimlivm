@@ -1,0 +1,7 @@
+#!/bin/sh
+SERVER_PORT="2010"
+SERVER_NAME="GimliVM"
+WEB_SITE="http://www.gimli.org/"
+FTP_SITE="ftp://gimli.org/"
+ADMIN_EMAIL="gimli@gimli.org"
+LOGFILE="${SERVER_ROOT}/var/log/messages"
